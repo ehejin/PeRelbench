@@ -6,9 +6,11 @@ import torch.nn.functional as F
 
 
 class MLP(nn.Module):
-    layers: nn.ModuleList
-    fc: nn.Linear
-    dropout: nn.Dropout
+    '''
+        MLP module from https://github.com/Graph-COM/SPE.git.
+        This special MLP model takes in a 3D input and preserves both shape
+        and independence across the 2nd dimension.
+    '''
 
     def __init__(
         self, n_layers: int, in_dims: int, hidden_dims: int, out_dims: int, use_bn: bool, activation: str,
@@ -43,12 +45,9 @@ class MLP(nn.Module):
 
 class MLPLayer(nn.Module):
     """
-    Based on https://pytorch.org/vision/main/_modules/torchvision/ops/misc.html#MLP
+        Based on https://pytorch.org/vision/main/_modules/torchvision/ops/misc.html#MLP.
+        Module from https://github.com/Graph-COM/SPE.git.
     """
-    fc: nn.Linear
-    bn: Optional[nn.BatchNorm1d]
-    activation: nn.Module
-    dropout: nn.Dropout
 
     def __init__(self, in_dims: int, out_dims: int, use_bn: bool, activation: str,
                  dropout_prob: float, norm_type: str = "batch", NEW_BATCH_NORM=False) -> None:
@@ -63,9 +62,6 @@ class MLPLayer(nn.Module):
             self.bn = nn.BatchNorm1d(out_dims) if norm_type == "batch" else nn.LayerNorm(out_dims)
         else:
             self.bn = None
-        # self.bn = nn.BatchNorm1d(out_dims) if use_bn else None
-        # self.ln = nn.LayerNorm(out_dims) if use_bn else None
-
         if activation == "tanh":
             self.activation = nn.Tanh()
         elif activation == "relu":
@@ -96,20 +92,10 @@ class MLPLayer(nn.Module):
             else:
                 X[mask] = self.bn(X[mask])
         elif self.bn is not None:
-#            if X.ndim == 3:
-#                # X = self.bn(X.transpose(2, 1)).transpose(2, 1)
-#                X = self.ln(X)
-#            else:
-#                X = self.bn(X)
             shape = X.size()
             X = X.reshape(-1, shape[-1])   # [prod(***), D_out]
             X = self.bn(X)                 # [prod(***), D_out]
             X = X.reshape(shape)           # [***, D_out]
         X = self.activation(X)             # [***, D_out]
-#        if self.bn is not None:
-#            if X.ndim == 3:
-#                X = self.bn(X.transpose(2, 1)).transpose(2, 1)
-#            else:
-#                X = self.bn(X)
         X = self.dropout(X)                # [***, D_out]
         return X

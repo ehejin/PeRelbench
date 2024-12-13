@@ -6,14 +6,8 @@ mlp_activation: 'relu'
 n_phi_layers: 8
 hidden_phi_layers: 120
 pe_dims: 4
-
-RAND_k: 10
-RAND_mlp_nlayers: 1
-RAND_mlp_hid: 40
-RAND_act: 'relu'
-RAND_mlp_out: 40
-
 node_emb_dims: 128
-num_samples: 100
+
+# Whether or not we use the 8 eigenvectors corresponding to the 8 smallest eigenvalues
 smallest: False 
 pe_type: 'signnet'

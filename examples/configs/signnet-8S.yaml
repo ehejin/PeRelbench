@@ -1,0 +1,12 @@
+n_mlp_layers: 2
+mlp_hidden_dims: 40
+mlp_use_bn: True
+mlp_activation: 'relu'
+
+n_phi_layers: 8
+hidden_phi_layers: 120
+pe_dims: 4
+node_emb_dims: 128
+
+smallest: True
+pe_type: 'signnet'

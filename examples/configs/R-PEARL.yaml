@@ -1,0 +1,5 @@
+BASIS: False
+RAND_k: 12
+num_samples: 80
+splits: 1
+pe_type: 'PEARL'

@@ -121,7 +121,9 @@ class HeteroTemporalEncoder(torch.nn.Module):
 
         return out_dict
 
-
+'''
+    HeteroGraphSAGE model from RelBench REPO
+'''
 class HeteroGraphSAGE(torch.nn.Module):
     def __init__(
         self,
@@ -174,6 +176,12 @@ class HeteroGraphSAGE(torch.nn.Module):
 
 
 class HeteroGraphSAGE_LINK(HeteroGraphSAGE):
+    '''
+        Edited HeteroGraphSAGE class that incorporates PE's by concatenating them to original 
+        node features. Inherits from the original HeteroGraphSAGE but includes linear layers to 
+        processing concatenated node features. Contains an additional GINPhi layer for PEARL
+        PE. 
+    '''
     def __init__(
         self,
         node_types: List[NodeType],
@@ -205,7 +213,9 @@ class HeteroGraphSAGE_LINK(HeteroGraphSAGE):
         
         self.phi = torch.nn.ModuleList()
         self.pe_embedding = torch.nn.ModuleList()
-        
+
+        # For PEARL we add an extra GINPhi. For both signnet and PEARL, we have a linear layer
+        # to reshape the concatenation between node features and PE's
         for _ in range(num_layers):
             new_phi = GINPhi(1, self.cfg.RAND_mlp_out, self.cfg.hidden_phi_layers, self.cfg.pe_dims, 
                                 self.create_mlp, self.cfg.mlp_use_bn, RAND_LAP=False)
@@ -222,12 +232,19 @@ class HeteroGraphSAGE_LINK(HeteroGraphSAGE):
                 norm.reset_parameters()
         self.MP.reset_parameters()
 
+    # Helper function to create MLPs for the GINPhi
     def create_mlp(self, in_dims: int, out_dims: int, use_bias=None):
         return MLP2(
             self.cfg.n_mlp_layers, in_dims, self.cfg.mlp_hidden_dims, out_dims, self.cfg.mlp_use_bn,
             self.cfg.mlp_activation, self.cfg.mlp_dropout_prob
          )
 
+    '''
+        This function takes in a dictionary of node features for a heterogenous graph, an
+        edge index dictionary with edge info, homogenous PE's, and a mapping from the homogenous PE
+        graph back to the hetero graph. It combines the node features with their respective PE's 
+        and then passes it through its message passing layers.
+    '''
     def forward(
         self,
         x_dict: Dict[NodeType, Tensor],
@@ -240,10 +257,15 @@ class HeteroGraphSAGE_LINK(HeteroGraphSAGE):
         new_list = [PE]
 
         for _, (conv, norm_dict, phi, pe_embedding) in enumerate(zip(self.convs, self.norms, self.phi, self.pe_embedding)):
+            # Pass PE's through an additional GINPhi model for PEARL framework
             if self.cfg.pe_type != 'signnet':
-                PE = phi(new_list, edge_index, self.cfg.BASIS, running_sum=False, final=False) 
+                PE = phi(new_list, edge_index, self.cfg.BASIS, running_sum=False, final=True) 
+            # Concatenate PE's into node features.
+            # Use our hom_to_het mapping from our data transform function to map our PE's from a homogenous graph
+            # back to the original heterogenous graph.
             for homogeneous_idx, pos_encoding in enumerate(PE):
                 node_type, node_idx = hom_to_het[homogeneous_idx]
+                # pe_embedding is a shallow MLP that reshapes our concatenated tensor to the original node feature shape
                 x_dict[node_type][node_idx] = pe_embedding(torch.cat((x_dict[node_type][node_idx], pos_encoding), dim=-1))
 
             x_dict = conv(x_dict, edge_index_dict)

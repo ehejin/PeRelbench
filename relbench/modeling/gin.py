@@ -65,7 +65,7 @@ class GIN(nn.Module):
 
 class GINLayer(MessagePassing):
     '''
-        GIN layer from https://github.com/Graph-COM/SPE.git 
+        Simple GIN layer from https://github.com/Graph-COM/SPE.git 
     '''
 
     def __init__(self, mlp: MLP) -> None:

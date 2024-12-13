@@ -114,6 +114,9 @@ class K_PEARL_PE(nn.Module):
 class SignInvPe(nn.Module):
     '''
         SignNet model from https://github.com/Graph-COM/SPE.git 
+        This model takes in a BxNxN tensor V of eigenvectors for each graph in
+        the batch (usually 1). Phi is assumed to be a special MessagePassing model that
+        takes in a 3D tensor and preserve independence across the 2nd dimension. rho is assumed to be an MLP.
     '''
     def __init__(self, phi: nn.Module, rho: nn.Module) -> None:
         super(SignInvPe, self).__init__()
@@ -124,9 +127,10 @@ class SignInvPe(nn.Module):
             self, Lambda: torch.Tensor, V: torch.Tensor, edge_index: torch.Tensor, batch: torch.Tensor
     ) -> torch.Tensor:
         x = V.unsqueeze(-1) 
-        x = self.phi(x, edge_index) + self.phi(-x, edge_index) # [N, D_pe, hidden_dims]
-        x = x.reshape([x.shape[0], -1]) # [N, D_pe * hidden_dims]
-        x = self.rho(x) # [N, D_pe]
+        x = self.phi(x, edge_index) + self.phi(-x, edge_index) # Has shape [N, D_pe, hidden_dims]
+        # Reshape to [N, D_pe * hidden_dims]
+        x = x.reshape([x.shape[0], -1]) 
+        x = self.rho(x) # Outputs a tensor of shape [N, D_pe]
 
         return x
 

@@ -1,0 +1,4 @@
+BASIS: True
+RAND_k: 7
+splits: 5
+pe_type: 'PEARL'

@@ -15,6 +15,13 @@ import numpy as np
 
 
 class Model(torch.nn.Module):
+    '''
+        This model is from the original RelBench repo. It supports tasks like link prediction
+        which requires ID-GNN base model. It contains a HeteroEncoder that encodes node features
+        using column information, HeteroTemporalEncoder, which captures temporal dependencies,
+        HeteroGraphSAGE, which performs message passing, and an MLP head for task-specific predictions.
+        If id_awareness is true, will support the ID-GNN.
+    '''
 
     def __init__(
         self,
@@ -32,6 +39,7 @@ class Model(torch.nn.Module):
     ):
         super().__init__()
 
+        # Processes node features using tabular data
         self.encoder = HeteroEncoder(
             channels=channels,
             node_to_col_names_dict={
@@ -40,12 +48,15 @@ class Model(torch.nn.Module):
             },
             node_to_col_stats=col_stats_dict,
         )
+
+        # Captures time-dependent relationships
         self.temporal_encoder = HeteroTemporalEncoder(
             node_types=[
                 node_type for node_type in data.node_types if "time" in data[node_type]
             ],
             channels=channels,
         )
+        # Heterogenous Message Passing
         self.gnn = HeteroGraphSAGE(
             node_types=data.node_types,
             edge_types=data.edge_types,
@@ -53,12 +64,14 @@ class Model(torch.nn.Module):
             aggr=aggr,
             num_layers=num_layers,
         )
+        # Task-specific MLP
         self.head = MLP(
             channels,
             out_channels=out_channels,
             norm=norm,
             num_layers=1,
         )
+        # Shallow embeddings for node types
         self.embedding_dict = ModuleDict(
             {
                 node: Embedding(data.num_nodes_dict[node], channels)
@@ -66,6 +79,7 @@ class Model(torch.nn.Module):
             }
         )
 
+        # Support for ID-awareness
         self.id_awareness_emb = None
         if id_awareness:
             self.id_awareness_emb = torch.nn.Embedding(1, channels)
@@ -81,21 +95,28 @@ class Model(torch.nn.Module):
         if self.id_awareness_emb is not None:
             self.id_awareness_emb.reset_parameters()
 
+    '''
+        This method takes in a batch of hetero graph data and an entity table that indicates
+        for which predictions to make. Returns a tensor of predictions.
+    '''
     def forward(
         self,
         batch: HeteroData,
         entity_table: NodeType,
     ) -> Tensor:
         seed_time = batch[entity_table].seed_time
-        x_dict = self.encoder(batch.tf_dict)
+        x_dict = self.encoder(batch.tf_dict) # Get node features
 
+        # Get temporal encoding
         rel_time_dict = self.temporal_encoder(
             seed_time, batch.time_dict, batch.batch_dict
         )
 
+        # Add temporal embeddings and encoded node features
         for node_type, rel_time in rel_time_dict.items():
             x_dict[node_type] = x_dict[node_type] + rel_time
 
+        # Add the shallow embeddings to node features if they exist
         for node_type, embedding in self.embedding_dict.items():
             x_dict[node_type] = x_dict[node_type] + embedding(batch[node_type].n_id)
 
@@ -108,6 +129,9 @@ class Model(torch.nn.Module):
 
         return self.head(x_dict[entity_table][: seed_time.size(0)])
 
+    '''
+        This method is the same as the forward method above, except it adds ID-awareness.
+    '''
     def forward_dst_readout(
         self,
         batch: HeteroData,
@@ -120,7 +144,8 @@ class Model(torch.nn.Module):
             )
         seed_time = batch[entity_table].seed_time
         x_dict = self.encoder(batch.tf_dict)
-        # Add ID-awareness to the root node
+
+        # Add ID-awareness to the root node!
         x_dict[entity_table][: seed_time.size(0)] += self.id_awareness_emb.weight
 
         rel_time_dict = self.temporal_encoder(
@@ -174,7 +199,8 @@ class MODEL_PE_LINK(Model):
             id_awareness=id_awareness,
         )
 
-        self.gnn = HeteroGraphSAGE_LINK(
+        # Our edited hetero GNN that supports PE's in the forward function
+        self.gnn = HeteroGraphSAGE_LINK( 
             node_types=data.node_types,
             edge_types=data.edge_types,
             channels=channels,
@@ -187,6 +213,7 @@ class MODEL_PE_LINK(Model):
         self.cfg = cfg
         self.pe_embedding = None
 
+        # Initialize our PE model depending on if we use the PEARL or signnet framework
         if self.cfg.pe_type = 'signnet':
             gin = GIN(self.cfg.n_phi_layers, 1, self.cfg.hidden_phi_layers, self.cfg.pe_dims, self.create_mlp, bn=True)  
             rho = MLP_PE(self.cfg.pe_dims, 8 * self.cfg.pe_dims, self.cfg.hidden_phi_layers, 8, use_bn=True, activation='relu', dropout_prob=0.0)
@@ -244,28 +271,37 @@ class MODEL_PE_LINK(Model):
 
         return PE
 
+    '''
+        This forward function 
+    '''
     def forward(
         self,
         batch: HeteroData,
         entity_table: NodeType
     ) -> Tensor:
         seed_time = batch[entity_table].seed_time
+
+        # Add positional encodings. If we use SignNet, simply pass in the eigenvectors to the model
         if self.cfg.pe_type == 'signnet':
             PE = self.positional_encoding(None, batch.V, batch.edge_index, batch=None)
-        else:
+        else: # For pearl, we need to generate the random and basis nodes first
             PE = self.compute_positional_encoding(batch)
         x_dict = self.encoder(batch.tf_dict)
 
+        # Get temporal info
         rel_time_dict = self.temporal_encoder(
             seed_time, batch.time_dict, batch.batch_dict
         )
 
+        # Add temporal information to the node features
         for node_type, rel_time in rel_time_dict.items():
             x_dict[node_type] = x_dict[node_type] + rel_time
-
+        
+        # Also add shallow embeddings
         for node_type, embedding in self.embedding_dict.items():
             x_dict[node_type] = x_dict[node_type] + embedding(batch[node_type].n_id)
 
+        # pass thru our edited gnn with PE support
         x_dict = self.gnn(
             x_dict, 
             batch.edge_index_dict,
@@ -291,9 +327,10 @@ class MODEL_PE_LINK(Model):
                 "id_awareness must be set True to use forward_dst_readout"
             )
         seed_time = batch[entity_table].seed_time
+        # Add positional encodings. If we use SignNet, simply pass in the eigenvectors to the model
         if self.cfg.pe_type == 'signnet':
             PE = self.positional_encoding(None, batch.V, batch.edge_index, batch=None)
-        else:
+        else: # For pearl, we need to generate the random and basis nodes first
             PE = self.compute_positional_encoding(batch)
 
         x_dict = self.encoder(batch.tf_dict)
@@ -305,9 +342,11 @@ class MODEL_PE_LINK(Model):
             seed_time, batch.time_dict, batch.batch_dict
         )
 
+        # Add temporal information to the node features
         for node_type, rel_time in rel_time_dict.items():
             x_dict[node_type] = x_dict[node_type] + rel_time
-
+        
+        # Also add shallow embeddings
         for node_type, embedding in self.embedding_dict.items():
             x_dict[node_type] = x_dict[node_type] + embedding(batch[node_type].n_id)
 

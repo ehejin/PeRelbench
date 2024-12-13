@@ -171,3 +171,83 @@ class HeteroGraphSAGE(torch.nn.Module):
             x_dict = {key: x.relu() for key, x in x_dict.items()}
 
         return x_dict
+
+
+class HeteroGraphSAGE_LINK(HeteroGraphSAGE):
+    def __init__(
+        self,
+        node_types: List[NodeType],
+        edge_types: List[EdgeType],
+        channels: int,
+        aggr: str = "mean",
+        num_layers: int = 2,
+        cfg=None
+    ):
+        super().__init__(
+            node_types=node_types,
+            edge_types=edge_types,
+            channels=channels,
+            aggr=aggr,
+            num_layers=num_layers
+        )
+        self.cfg = cfg
+
+        self.convs = torch.nn.ModuleList()
+        for _ in range(num_layers):
+            convs = HeteroConv(
+                {
+                    edge_type: SAGEConv((channels, channels), channels, aggr=aggr)
+                    for edge_type in edge_types
+                },
+                aggr="sum"
+            )
+            self.convs.append(convs)
+        
+        self.phi = torch.nn.ModuleList()
+        self.pe_embedding = torch.nn.ModuleList()
+        
+        for _ in range(num_layers):
+            new_phi = GINPhi(1, self.cfg.RAND_mlp_out, self.cfg.hidden_phi_layers, self.cfg.pe_dims, 
+                                self.create_mlp, self.cfg.mlp_use_bn, RAND_LAP=False)
+            new_emb = torch.nn.Linear(self.cfg.pe_dims + cfg.node_emb_dims, cfg.node_emb_dims) 
+            self.phi.append(new_phi)
+            self.pe_embedding.append(new_emb)
+
+
+    def reset_parameters(self):
+        for conv in self.convs:
+            conv.reset_parameters()
+        for norm_dict in self.norms:
+            for norm in norm_dict.values():
+                norm.reset_parameters()
+        self.MP.reset_parameters()
+
+    def create_mlp(self, in_dims: int, out_dims: int, use_bias=None):
+        return MLP2(
+            self.cfg.n_mlp_layers, in_dims, self.cfg.mlp_hidden_dims, out_dims, self.cfg.mlp_use_bn,
+            self.cfg.mlp_activation, self.cfg.mlp_dropout_prob
+         )
+
+    def forward(
+        self,
+        x_dict: Dict[NodeType, Tensor],
+        edge_index_dict: Dict[NodeType, Tensor],
+        PE,
+        hom_to_het,
+        edge_index,
+        hetero_data
+    ) -> Dict[NodeType, Tensor]:
+        new_list = [PE]
+
+        for _, (conv, norm_dict, phi, pe_embedding) in enumerate(zip(self.convs, self.norms, self.phi, self.pe_embedding)):
+            if self.cfg.pe_type != 'signnet':
+                PE = phi(new_list, edge_index, self.cfg.BASIS, running_sum=False, final=False) 
+            for homogeneous_idx, pos_encoding in enumerate(PE):
+                node_type, node_idx = hom_to_het[homogeneous_idx]
+                x_dict[node_type][node_idx] = pe_embedding(torch.cat((x_dict[node_type][node_idx], pos_encoding), dim=-1))
+
+            x_dict = conv(x_dict, edge_index_dict)
+            x_dict = {key: norm_dict[key](x) for key, x in x_dict.items()}
+            x_dict = {key: x.detach().relu() for key, x in x_dict.items()}
+
+        return x_dict

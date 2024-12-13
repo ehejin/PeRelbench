@@ -1,0 +1,19 @@
+n_mlp_layers: 2
+mlp_hidden_dims: 40
+mlp_use_bn: True
+mlp_activation: 'relu'
+
+n_phi_layers: 8
+hidden_phi_layers: 120
+pe_dims: 4
+
+RAND_k: 10
+RAND_mlp_nlayers: 1
+RAND_mlp_hid: 40
+RAND_act: 'relu'
+RAND_mlp_out: 40
+
+node_emb_dims: 128
+num_samples: 100
+smallest: False 
+pe_type: 'signnet'

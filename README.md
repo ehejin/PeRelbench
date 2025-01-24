@@ -11,11 +11,14 @@
 [![Twitter](https://img.shields.io/twitter/url/https/twitter.com/cloudposse.svg?style=social&label=Follow%20%40RelBench)](https://twitter.com/RelBench)
 
 ---
-**This repo also contains modules adapted from [**SPE**](https://github.com/Graph-COM/SPE) by Huang et al. **
+
+## Attribution
+
+This repo also contains modules and models adapted from [**SPE**](https://github.com/Graph-COM/SPE) by Huang et al. 
 
 ## Changes in This Fork
 
-**This fork contains SignNet and PEARL positional encoding models and incorporated them into the RelBench model**  
+**This fork contains SignNet and PEARL positional encoding models that are incorporated into the RelBench model**  
    - modeling/pe.py contains the positional encoder models.
    - examples/model.py contains the edited version of model to support PE's, namely the MODEL_PE_LINK class.
    - modeling/mlp.py and gin.py contain helper modules.

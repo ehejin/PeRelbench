@@ -11,11 +11,11 @@
 [![Twitter](https://img.shields.io/twitter/url/https/twitter.com/cloudposse.svg?style=social&label=Follow%20%40RelBench)](https://twitter.com/RelBench)
 
 ---
-**This repo also contains modules adapted from [**SPE**](https://github.com/Graph-COM/SPE)**
+**This repo also contains modules adapted from [**SPE**](https://github.com/Graph-COM/SPE) by Huang et al. **
 
 ## Changes in This Fork
 
-**In this fork, I have added SignNet and PEARL positional encoding models and incorporated them into the RelBench model**  
+**This fork contains SignNet and PEARL positional encoding models and incorporated them into the RelBench model**  
    - modeling/pe.py contains the positional encoder models.
    - examples/model.py contains the edited version of model to support PE's, namely the MODEL_PE_LINK class.
    - modeling/mlp.py and gin.py contain helper modules.
@@ -43,11 +43,6 @@ python -m examples.PE_idgnn_link --dataset rel-stack --task user-post-comment --
 
 **What is RelBench?**  
 RelBench is a benchmark for end-to-end representation learning on relational databases. It offers:
-
-- **Realistic, large-scale relational datasets** spanning domains including medical, social networks, e-commerce, and sports.
-- **Multiple prediction tasks** (30 in total) defined for each dataset.
-- **Framework-agnostic tools** for data loading, standardized evaluation, and reproducible experimentation.
-- **Graph-based modeling support**: transform relational databases into graphs suitable for Graph Neural Network (GNN) models.
 
 To learn more, see the [**Benchmark Paper**](https://arxiv.org/abs/2407.20060) or visit the [**website**](https://relbench.stanford.edu).
 

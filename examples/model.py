@@ -7,7 +7,7 @@ from torch_frame.data.stats import StatType
 from torch_geometric.data import HeteroData
 from torch_geometric.nn import MLP
 from torch_geometric.typing import NodeType
-from relbench.modeling.nn import HeteroEncoder, HeteroGraphSAGE, HeteroGraphSAGE_LINK, HeteroEncoder_PEARL, HeteroGraphSAGE_PEARL, HeteroTemporalEncoder
+from relbench.modeling.nn import HeteroEncoder, HeteroGraphSAGE, HeteroGraphSAGE_LINK, HeteroTemporalEncoder, HeteroEncoder_PEARL#, HeteroGraphSAGE_PEARL
 from relbench.modeling.mlp import MLP as MLP_PE
 from relbench.modeling.pe import K_PEARL_PE, GINPhi, SignInvPe
 from relbench.modeling.gin import GIN
@@ -166,6 +166,192 @@ class Model(torch.nn.Module):
         return self.head(x_dict[dst_table])
 
 
+class Model_SIGNNET(nn.Module):
+    """
+    A SignNet-based GNN model with ID-awareness
+    """
+
+    def __init__(
+        self,
+        data: HeteroData,
+        col_stats_dict: Dict[str, Dict[str, Dict["StatType", Any]]],
+        num_layers: int,
+        channels: int,
+        out_channels: int,
+        aggr: str,
+        norm: str,
+        shallow_list: List["NodeType"] = [],
+        id_awareness: bool = False,
+        cfg=None,
+        device=None,
+    ):
+        super().__init__()
+        self.cfg = cfg
+        self.device = device
+        self.encoder = HeteroEncoder_PEARL(
+            channels=channels,
+            node_to_col_names_dict={
+                node_type: data[node_type].tf.col_names_dict
+                for node_type in data.node_types
+            },
+            node_to_col_stats=col_stats_dict,
+        )
+        self.temporal_encoder = HeteroTemporalEncoder(
+            node_types=[nt for nt in data.node_types if "time" in data[nt]],
+            channels=channels,
+        )
+        self.gnn = HeteroGraphSAGE(
+            node_types=data.node_types,
+            edge_types=data.edge_types,
+            channels=channels,
+            aggr=aggr,
+            num_layers=num_layers
+        )
+        self.head = MLP(
+            in_channels=channels,
+            out_channels=out_channels,
+            norm=norm,
+            num_layers=1,
+        )
+        gin = GIN(
+            num_layers=self.cfg.n_phi_layers,
+            in_channels=1,
+            hidden_channels=self.cfg.hidden_phi_layers,
+            out_channels=4,
+            create_mlp=self.create_mlp,
+            bn=True
+        )
+        rho = MLP_PE(
+            in_channels=4,
+            hidden_channels=4 * self.cfg.pe_dims,
+            num_layers=self.cfg.hidden_phi_layers,
+            out_channels=self.cfg.pe_dims,
+            use_bn=True,
+            activation="relu",
+            dropout_prob=0.0
+        )
+        self.positional_encoding = SignInvPe(phi=gin, rho=rho)
+        self.pe_embedding = nn.Linear(self.cfg.pe_dims, self.cfg.node_emb_dims)
+        self.embedding_dict = ModuleDict(
+            {
+                node_type: Embedding(data.num_nodes_dict[node_type], channels)
+                for node_type in shallow_list
+            }
+        )
+        self.id_awareness_emb = None
+        if id_awareness:
+            self.id_awareness_emb = nn.Embedding(1, channels)
+        self.reset_parameters()
+
+    def create_mlp(self, in_dims: int, out_dims: int, use_bias=None) -> nn.Module:
+        return MLP_PE(
+            num_layers=self.cfg.n_mlp_layers,
+            in_channels=in_dims,
+            hidden_channels=self.cfg.mlp_hidden_dims,
+            out_channels=out_dims,
+            use_bn=self.cfg.mlp_use_bn,
+            activation=self.cfg.mlp_activation,
+            dropout_prob=self.cfg.mlp_dropout_prob
+        )
+
+    def reset_parameters(self):
+        self.encoder.reset_parameters()
+        self.temporal_encoder.reset_parameters()
+        self.gnn.reset_parameters()
+        self.head.reset_parameters()
+        for embedding in self.embedding_dict.values():
+            nn.init.normal_(embedding.weight, std=0.1)
+        if self.id_awareness_emb is not None:
+            self.id_awareness_emb.reset_parameters()
+        nn.init.xavier_uniform_(self.pe_embedding.weight)
+
+    def forward(
+        self,
+        batch: HeteroData,
+        entity_table: "NodeType",
+        W=None,
+        print_emb: bool = False,
+        device=None
+    ) -> Tensor:
+        seed_time = batch[entity_table].seed_time
+
+        PE = self.positional_encoding(None, batch.V, batch.edge_index, batch=None)
+        reverse_node_mapping = batch.reverse_node_mapping
+        projected_PE = self.pe_embedding(PE)
+        PE_dict = {}
+
+        last_node_idx = -1
+
+        for homogeneous_idx, pos_encoding in enumerate(projected_PE):
+            node_type, node_idx = reverse_node_mapping[homogeneous_idx]
+            if node_type not in PE_dict:
+                last_node_idx = -1
+                PE_dict[node_type] = pos_encoding.unsqueeze(dim=0)
+            else:
+                PE_dict[node_type] = torch.cat(
+                    (PE_dict[node_type], pos_encoding.unsqueeze(dim=0)), dim=0
+                )
+            last_node_idx = node_idx
+        x_dict = self.encoder(batch.tf_dict, PE_dict)
+        rel_time_dict = self.temporal_encoder(
+            seed_time, batch.time_dict, batch.batch_dict
+        )
+
+        for node_type, rel_time in rel_time_dict.items():
+            x_dict[node_type] += rel_time
+
+        for node_type, embedding in self.embedding_dict.items():
+            x_dict[node_type] += embedding(batch[node_type].n_id)
+        x_dict = self.gnn(
+            x_dict,
+            batch.edge_index_dict,
+            batch.num_sampled_nodes_dict,
+            batch.num_sampled_edges_dict
+        )
+        return self.head(x_dict[entity_table][: seed_time.size(0)])
+
+    def forward_dst_readout(
+        self,
+        batch: HeteroData,
+        entity_table: "NodeType",
+        dst_table: "NodeType"
+    ) -> Tensor:
+        if self.id_awareness_emb is None:
+            raise RuntimeError(
+                "id_awareness must be True to use forward_dst_readout."
+            )
+        seed_time = batch[entity_table].seed_time
+        PE = self.positional_encoding(None, batch.V, batch.edge_index, batch=None)
+        reverse_node_mapping = batch.reverse_node_mapping
+        projected_PE = self.pe_embedding(PE)
+        PE_dict = {}
+        last_node_idx = -1
+
+        for homogeneous_idx, pos_encoding in enumerate(projected_PE):
+            node_type, node_idx = reverse_node_mapping[homogeneous_idx]
+            if node_type not in PE_dict:
+                last_node_idx = -1
+                PE_dict[node_type] = pos_encoding.unsqueeze(dim=0)
+            else:
+                PE_dict[node_type] = torch.cat(
+                    (PE_dict[node_type], pos_encoding.unsqueeze(dim=0)), dim=0
+                )
+            last_node_idx = node_idx
+        x_dict = self.encoder(batch.tf_dict, PE_dict)
+
+        x_dict[entity_table][: seed_time.size(0)] += self.id_awareness_emb.weight
+        rel_time_dict = self.temporal_encoder(
+            seed_time, batch.time_dict, batch.batch_dict
+        )
+        for node_type, rel_time in rel_time_dict.items():
+            x_dict[node_type] += rel_time
+        for node_type, embedding in self.embedding_dict.items():
+            x_dict[node_type] += embedding(batch[node_type].n_id)
+        x_dict = self.gnn(x_dict, batch.edge_index_dict)
+        return self.head(x_dict[dst_table])
+
+
+
 class MODEL_PE_LINK(Model):
     '''
         This model extends the RelBench base Model class by incorporating positional encodings
@@ -214,20 +400,19 @@ class MODEL_PE_LINK(Model):
         self.pe_embedding = None
 
         # Initialize our PE model depending on if we use the PEARL or signnet framework
-        if self.cfg.pe_type = 'signnet':
-            gin = GIN(self.cfg.n_phi_layers, 1, self.cfg.hidden_phi_layers, self.cfg.pe_dims, self.create_mlp, bn=True)  
-            rho = MLP_PE(self.cfg.pe_dims, 8 * self.cfg.pe_dims, self.cfg.hidden_phi_layers, 8, use_bn=True, activation='relu', dropout_prob=0.0)
+        if self.cfg.pe_type == 'signnet':
+            gin = GIN(self.cfg.n_phi_layers, 1, self.cfg.hidden_phi_layers, 4, self.create_mlp, bn=True)  
+            rho = MLP_PE(4, 4 * self.cfg.pe_dims, self.cfg.hidden_phi_layers, self.cfg.pe_dims, use_bn=True, activation='relu', dropout_prob=0.0)
             self.positional_encoding = SignInvPe(phi=gin, rho=rho)
             self.pe_embedding = torch.nn.Linear(8, self.cfg.node_emb_dims)
         else:
             phi = GINPhi(self.cfg.n_phi_layers, self.cfg.RAND_mlp_out, self.cfg.hidden_phi_layers, self.cfg.pe_dims, 
-                                self.create_mlp, self.cfg.mlp_use_bn)          
+                                self.create_mlp, self.cfg.mlp_use_bn, basis=self.cfg.BASIS)          
             self.positional_encoding = K_PEARL_PE(phi, k=cfg.RAND_k, mlp_nlayers=cfg.RAND_mlp_nlayers, 
                             mlp_hid=cfg.RAND_mlp_hid, spe_act=cfg.RAND_act, mlp_out=cfg.RAND_mlp_out)
             self.num_samples = cfg.num_samples
 
     def create_mlp(self, in_dims: int, out_dims: int, use_bias=None) -> MLP:
-        print(in_dims)
         return MLP_PE(
             self.cfg.n_mlp_layers, in_dims, self.cfg.mlp_hidden_dims, out_dims, self.cfg.mlp_use_bn,
             self.cfg.mlp_activation, self.cfg.mlp_dropout_prob
@@ -271,9 +456,7 @@ class MODEL_PE_LINK(Model):
 
         return PE
 
-    '''
-        This forward function 
-    '''
+
     def forward(
         self,
         batch: HeteroData,
@@ -360,3 +543,5 @@ class MODEL_PE_LINK(Model):
         )
 
         return self.head(x_dict[dst_table])
+
+

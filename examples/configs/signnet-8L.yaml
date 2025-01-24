@@ -5,7 +5,7 @@ mlp_activation: 'relu'
 
 n_phi_layers: 8
 hidden_phi_layers: 120
-pe_dims: 4
+pe_dims: 8
 node_emb_dims: 128
 
 # Whether or not we use the 8 eigenvectors corresponding to the 8 smallest eigenvalues

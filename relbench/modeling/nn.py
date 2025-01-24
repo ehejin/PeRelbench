@@ -7,6 +7,8 @@ from torch_frame.data.stats import StatType
 from torch_frame.nn.models import ResNet
 from torch_geometric.nn import HeteroConv, LayerNorm, PositionalEncoding, SAGEConv
 from torch_geometric.typing import EdgeType, NodeType
+from relbench.modeling.pe import GINPhi
+from relbench.modeling.mlp import MLP as MLP3D
 
 
 class HeteroEncoder(torch.nn.Module):
@@ -177,7 +179,7 @@ class HeteroGraphSAGE(torch.nn.Module):
 
 class HeteroGraphSAGE_LINK(HeteroGraphSAGE):
     '''
-        Edited HeteroGraphSAGE class that incorporates PE's by concatenating them to original 
+        Edited HeteroGraphSAGE class incorporating PE's by concatenating them to original 
         node features. Inherits from the original HeteroGraphSAGE but includes linear layers to 
         processing concatenated node features. Contains an additional GINPhi layer for PEARL
         PE. 
@@ -218,7 +220,7 @@ class HeteroGraphSAGE_LINK(HeteroGraphSAGE):
         # to reshape the concatenation between node features and PE's
         for _ in range(num_layers):
             new_phi = GINPhi(1, self.cfg.RAND_mlp_out, self.cfg.hidden_phi_layers, self.cfg.pe_dims, 
-                                self.create_mlp, self.cfg.mlp_use_bn, RAND_LAP=False)
+                                self.create_mlp, self.cfg.mlp_use_bn, basis=self.cfg.BASIS)
             new_emb = torch.nn.Linear(self.cfg.pe_dims + cfg.node_emb_dims, cfg.node_emb_dims) 
             self.phi.append(new_phi)
             self.pe_embedding.append(new_emb)
@@ -234,7 +236,7 @@ class HeteroGraphSAGE_LINK(HeteroGraphSAGE):
 
     # Helper function to create MLPs for the GINPhi
     def create_mlp(self, in_dims: int, out_dims: int, use_bias=None):
-        return MLP2(
+        return MLP3D(
             self.cfg.n_mlp_layers, in_dims, self.cfg.mlp_hidden_dims, out_dims, self.cfg.mlp_use_bn,
             self.cfg.mlp_activation, self.cfg.mlp_dropout_prob
          )
@@ -259,7 +261,7 @@ class HeteroGraphSAGE_LINK(HeteroGraphSAGE):
         for _, (conv, norm_dict, phi, pe_embedding) in enumerate(zip(self.convs, self.norms, self.phi, self.pe_embedding)):
             # Pass PE's through an additional GINPhi model for PEARL framework
             if self.cfg.pe_type != 'signnet':
-                PE = phi(new_list, edge_index, self.cfg.BASIS, running_sum=False, final=True) 
+                PE = phi(new_list, edge_index, running_sum=False, final=False) 
             # Concatenate PE's into node features.
             # Use our hom_to_het mapping from our data transform function to map our PE's from a homogenous graph
             # back to the original heterogenous graph.
@@ -272,4 +274,63 @@ class HeteroGraphSAGE_LINK(HeteroGraphSAGE):
             x_dict = {key: norm_dict[key](x) for key, x in x_dict.items()}
             x_dict = {key: x.detach().relu() for key, x in x_dict.items()}
 
+        return x_dict
+
+
+class HeteroEncoder_PEARL(torch.nn.Module):
+    def __init__(
+        self,
+        channels: int,
+        node_to_col_names_dict: Dict[NodeType, Dict[torch_frame.stype, List[str]]],
+        node_to_col_stats: Dict[NodeType, Dict[str, Dict[StatType, Any]]],
+        torch_frame_model_cls=ResNet2,
+        torch_frame_model_kwargs: Dict[str, Any] = {
+            "channels": 128,
+            "num_layers": 4,
+        },
+        default_stype_encoder_cls_kwargs: Dict[torch_frame.stype, Any] = {
+            torch_frame.categorical: (torch_frame.nn.EmbeddingEncoder, {}),
+            torch_frame.numerical: (torch_frame.nn.LinearEncoder, {}),
+            torch_frame.multicategorical: (
+                torch_frame.nn.MultiCategoricalEmbeddingEncoder,
+                {},
+            ),
+            torch_frame.embedding: (torch_frame.nn.LinearEmbeddingEncoder, {}),
+            torch_frame.timestamp: (torch_frame.nn.TimestampEncoder, {}),
+        },
+    ):
+        super().__init__()
+
+        self.encoders = torch.nn.ModuleDict()
+
+        for node_type in node_to_col_names_dict.keys():
+            stype_encoder_dict = {
+                stype: default_stype_encoder_cls_kwargs[stype][0](
+                    **default_stype_encoder_cls_kwargs[stype][1]
+                )
+                for stype in node_to_col_names_dict[node_type].keys()
+            }
+            torch_frame_model = torch_frame_model_cls(
+                **torch_frame_model_kwargs,
+                out_channels=channels,
+                col_stats=node_to_col_stats[node_type],
+                col_names_dict=node_to_col_names_dict[node_type],
+                stype_encoder_dict=stype_encoder_dict,
+            )
+            self.encoders[node_type] = torch_frame_model
+
+    def reset_parameters(self):
+        for encoder in self.encoders.values():
+            encoder.reset_parameters()
+
+    def forward(
+        self,
+        tf_dict: Dict[NodeType, torch_frame.TensorFrame],
+        PE_dict
+    ) -> Dict[NodeType, Tensor]:
+        x_dict = {}
+        for node_type, tf in tf_dict.items():
+            if node_type not in PE_dict:
+                PE_dict[node_type] = None
+            x_dict[node_type] = self.encoders[node_type](tf, PE_dict[node_type])
         return x_dict

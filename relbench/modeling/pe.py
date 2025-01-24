@@ -39,7 +39,7 @@ def lap_filter(L: torch.Tensor, W: torch.Tensor, k: int) -> torch.Tensor:
 
 class K_PEARL_PE(nn.Module):
     '''
-        Structure adapted from https://github.com/Graph-COM/SPE.git 
+        Adapted from https://github.com/Graph-COM/SPE.git 
         This is a part of the PEARL positional encoder. This model takes in random or
         basis vectors as input features, applies the laplacian filter and passes the output
         through an MLP before passing it through phi. 
@@ -57,6 +57,7 @@ class K_PEARL_PE(nn.Module):
         spe_act: str = 'relu', 
         mlp_out: int = 16
     ) -> None:
+        super().__init__()
         if mlp_nlayers > 0:
             self.bn = nn.ModuleList()
             self.layers = nn.ModuleList([
@@ -77,6 +78,9 @@ class K_PEARL_PE(nn.Module):
             self.activation = nn.Identity()
         self.running_sum = 0
         self.total = 0
+        self.k = k
+        self.mlp_nlayers = mlp_nlayers
+        self.phi = phi
 
     def forward(
         self, Lap, W, edge_index: torch.Tensor, final=False
@@ -147,14 +151,16 @@ class GINPhi(nn.Module):
         independence across the M random vectors or N basis vectors. 
     '''
     def __init__(
-        self, n_layers: int, in_dims: int, hidden_dims: int, out_dims: int, create_mlp: Callable[[int, int], MLP], bn: bool
+        self, n_layers: int, in_dims: int, hidden_dims: int, out_dims: int, create_mlp: Callable[[int, int], MLP], bn: bool, 
+            basis: bool
     ) -> None:
         super().__init__()
         self.gin = GIN(n_layers, in_dims, hidden_dims, out_dims, create_mlp, bn)
         self.running_sum = 0
-        self.total = 0
+        self.basis = basis
+        self.pooling = True
 
-    def forward(self, W_list: List[torch.Tensor], edge_index: torch.Tensor, final: bool =False) -> torch.Tensor:
+    def forward(self, W_list: List[torch.Tensor], edge_index: torch.Tensor, running_sum: bool = True, final: bool =False) -> torch.Tensor:
         """
         Args:
             W_list: The list of NxMxK (or NxNxK if using basis vectors) tensors per graph in the batch, 
@@ -165,23 +171,30 @@ class GINPhi(nn.Module):
         Here N_sum refers to the number of nodes aggregated across graphs in the batch. However,
         since we sample one subgraph at a time (B=1), N_sum=N
         """ 
-        # If we are using random samples,
-        W = torch.cat(W_list, dim=0)   # [N_sum, M, K]
-        PE = self.gin(W, edge_index)  # [N,M,D]
-        self.running_sum += (PE).sum(dim=1) # Keep track of the running sum
-        if final:
-            PE = self.running_sum
-            self.running_sum = 0
-        return PE               # [N_sum, D_pe]
+        if not self.basis:
+            W = torch.cat(W_list, dim=0)  
+            PE = self.gin(W, edge_index)
+            if running_sum:
+                if self.pooling:
+                    self.running_sum += (PE).sum(dim=1)
+                else:
+                    self.running_sum += PE
+            PE = PE
+            if final:
+                PE = self.running_sum
+                self.running_sum = 0
+            return PE              
+        else:
+            W = W_list[0]
+            PE = self.gin(W, edge_index)
+            if running_sum:
+                self.running_sum += (PE).sum(dim=1)
+            if final:
+                PE = self.running_sum
+                self.running_sum = 0
+            return PE              
 
     @property
     def out_dims(self) -> int:
         return self.gin.out_dims
 
-
-'''
-    Helper function to create GINPhi model.
-'''
-def GetPhi(cfg, create_mlp: Callable[[int, int], MLP], device):
-    return GINPhi(cfg.n_phi_layers, cfg.RAND_mlp_out, cfg.phi_hidden_dims, cfg.pe_dims,
-                                         create_mlp, cfg.batch_norm, RAND_LAP=cfg.RAND_LAP)

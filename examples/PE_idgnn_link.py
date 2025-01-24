@@ -9,7 +9,7 @@ from typing import Dict, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-from examples.model import MODEL_PE_LINK, Model_PEARL, Model_SIGNNET
+from examples.model import MODEL_PE_LINK
 from examples.text_embedder import GloveTextEmbedding
 from torch import Tensor
 from torch_frame import stype
@@ -155,7 +155,7 @@ parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--wandb", type=bool, default=False)
 parser.add_argument('--name', type=str, default=None)
 parser.add_argument("--cfg", type=str, default=None, help="Path to PE cfg file")
-parser.add_argument('--gpu_id', type=int, default=0)
+parser.add_argument('--gpu_id', type=int, default=7)
 parser.add_argument(
     "--cache_dir", type=str, default=os.path.expanduser("~/.cache/relbench_examples")
 )
@@ -232,7 +232,7 @@ for split in ["train", "val", "test"]:
     )
 
 # Load our RelBench model with the PE framework integrated
-model = Model_PE_LINK(
+model = MODEL_PE_LINK(
     data=data,
     col_stats_dict=col_stats_dict,
     num_layers=args.num_layers,
